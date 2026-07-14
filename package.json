@@ -1,0 +1,47 @@
+{
+  "name": "restora-mcp",
+  "version": "0.1.0",
+  "description": "Read-only MCP server that exposes your local Notion backups to AI agents (Claude Desktop, Cursor, Cline, Zed…). Offline by default — no LLM calls, no telemetry, no cloud.",
+  "type": "module",
+  "bin": {
+    "restora-mcp": "dist/restora-mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/restora-mcp.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "notion",
+    "notion-backup",
+    "backup",
+    "restora",
+    "ai-agents"
+  ],
+  "license": "MIT",
+  "author": "Taha Bakri",
+  "homepage": "https://restora.cc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tahabakri/restora-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tahabakri/restora-mcp/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0",
+    "zod": "^3.23.0"
+  }
+}
