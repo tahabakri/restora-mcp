@@ -11,13 +11,14 @@
  *   • Every tool is read-only / side-effect-free. Backup content is untrusted data (it can contain
  *     prompt-injection); because no tool can write, delete, or call Notion-with-side-effects, a malicious
  *     string can at worst mislead output, never cause an action.
- *   • Path-traversal guarded: a tool's `path` argument must resolve under the configured backup folder.
+ *   • Path-traversal guarded: a tool's `path` argument must resolve under the configured backup folder,
+ *     compared after symlink resolution so a link inside the folder cannot reach outside it.
  *
  * Transport is hand-rolled newline-delimited JSON-RPC 2.0 over stdin/stdout (no MCP SDK dependency, so
  * the published CLI stays a single zero-dep esbuild bundle). CRITICAL: stdout carries ONLY protocol
  * frames — all logs go to stderr, and we redirect console.log → stderr as belt-and-suspenders.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig, type RestoraConfig } from "./config.js";
@@ -100,16 +101,32 @@ import { isBackupFileName, listFiles } from "../../packages/node-api/src/backup-
 
 const isIdMapFileName = (name: string): boolean => /^restore-map-.*\.json$/i.test(name);
 
-/** Resolve + guard a caller-supplied path: must be a .json under one of the allowed roots. */
-function guardPath(p: string, roots: string[]): string {
+const isUnder = (root: string, target: string): boolean => {
+  const rel = relative(root, target);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+};
+
+/**
+ * Resolve + guard a caller-supplied path: must be a .json that really lives under an allowed root.
+ *
+ * `path.resolve` is purely LEXICAL — it normalises `..` but does not follow symlinks. A symlink sitting
+ * in the backup folder (`~/Restora Backups/notes.json` → `~/.config/secrets.json`) therefore passed the
+ * old check and its contents were handed to the agent, defeating the containment this function exists to
+ * provide. Compare real paths on both sides so the link target, not the link, decides.
+ *
+ * A path that does not exist yet cannot be resolved; fall back to the lexical check, which is still
+ * sound — nothing can be read through it.
+ */
+async function guardPath(p: string, roots: string[]): Promise<string> {
   const abs = resolve(expandUser(p));
   if (extname(abs).toLowerCase() !== ".json") throw new Error(`Path must be a .json file: ${p}`);
-  const ok = roots.some((root) => {
-    const rel = relative(resolve(root), abs);
-    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-  });
-  if (!ok) throw new Error(`Path is outside the allowed backup folder(s): ${p}`);
-  return abs;
+  const realTarget = await realpath(abs).catch(() => abs);
+  for (const root of roots) {
+    const lexicalRoot = resolve(root);
+    const realRoot = await realpath(lexicalRoot).catch(() => lexicalRoot);
+    if (isUnder(realRoot, realTarget)) return realTarget;
+  }
+  throw new Error(`Path is outside the allowed backup folder(s): ${p}`);
 }
 
 async function loadBackupAt(path: string): Promise<BackupFile> {
@@ -302,7 +319,7 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
 
 async function readIdMap(source: BackupSource, argPath?: string): Promise<any> {
   let path: string;
-  if (argPath) path = guardPath(argPath, source.roots);
+  if (argPath) path = await guardPath(argPath, source.roots);
   else {
     const files = await listFiles(source.roots, isIdMapFileName);
     if (!files.length) throw new Error(`No restore-map-*.json found in ${source.roots.join(", ")}.`);
