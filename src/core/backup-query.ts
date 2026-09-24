@@ -18,6 +18,7 @@ import {
 } from "../notion/types.js";
 import { pageTitle, renderBlocks, blocksToPlainText, plainText } from "./render-md.js";
 import { assembleTree, buildPathMap, type WorkspaceItem } from "./tree.js";
+import { UNAVAILABLE_CALCULATED_TEXT, isUnavailableCalculatedResult, countCalculatedValuesUnavailable } from "./calculated-values.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -120,6 +121,8 @@ export type PropValue = string | number | boolean | string[] | null;
 
 function flattenRollup(r: any, resolver?: Resolver): PropValue {
   if (!r || typeof r !== "object") return null;
+  // A result Notion didn't provide is SAID, never dumped as "{}" and never guessed (calculated-values.ts).
+  if (isUnavailableCalculatedResult(r)) return UNAVAILABLE_CALCULATED_TEXT;
   switch (r.type) {
     case "number":
       return typeof r.number === "number" ? r.number : null;
@@ -128,6 +131,8 @@ function flattenRollup(r: any, resolver?: Resolver): PropValue {
     case "array": {
       const arr = (r.array ?? [])
         .map((el: any) => {
+          // An unavailable member keeps its place in the list, so a partial list never reads as whole.
+          if (isUnavailableCalculatedResult(el)) return UNAVAILABLE_CALCULATED_TEXT;
           const fv = flattenProperty(el, resolver);
           if (fv === null) return "";
           return Array.isArray(fv) ? fv.join(", ") : String(fv);
@@ -145,6 +150,7 @@ function flattenRollup(r: any, resolver?: Resolver): PropValue {
 
 function flattenFormula(f: any): PropValue {
   if (!f || typeof f !== "object") return null;
+  if (isUnavailableCalculatedResult(f)) return UNAVAILABLE_CALCULATED_TEXT;
   switch (f.type) {
     case "string":
       return f.string != null ? cap(String(f.string)) : null;
@@ -673,6 +679,9 @@ export interface BackupSummary {
   standalonePageCount: number;
   /** Approximate decoded size of all captured attachments (base64 length × 3/4). */
   attachmentBytes: number;
+  /** Database property cells whose formula/rollup result Notion didn't provide (calculated-values.ts) —
+   *  kept in the file exactly as Notion sent it; nothing here guesses a value. */
+  calculatedValuesUnavailableCount: number;
 }
 
 export function summarizeBackup(backup: BackupFile): BackupSummary {
@@ -709,5 +718,6 @@ export function summarizeBackup(backup: BackupFile): BackupSummary {
     relationLinkCount,
     standalonePageCount: (backup.pages ?? []).length,
     attachmentBytes,
+    calculatedValuesUnavailableCount: countCalculatedValuesUnavailable(backup),
   };
 }
