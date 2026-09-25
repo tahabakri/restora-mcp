@@ -26,16 +26,16 @@ import { clientFromConfig } from "./notion.js";
 import { runAudit } from "../../src/core/audit.js";
 import {
   parseBackup,
-  buildResolver,
   buildWorkspaceMap,
   queryDataSource,
-  getPageMarkdown,
   searchBackup,
   summarizeBackup,
   AmbiguousDataSourceError,
   type SearchScope,
 } from "../../src/core/backup-query.js";
-import type { BackupFile } from "../../src/notion/types.js";
+import { ARCHIVE_FORMAT_VERSION, newerFormatMessage, type BackupFile } from "../../src/notion/types.js";
+// Archived rows (format 3): read through the app's canonical readers (mirrored) — see archive-display.ts.
+import { buildArchiveDisplay, renderPage, archiveSummary, describeArchive, dataSourceArchive, ARCHIVE_NOTE } from "../../src/core/archive-display.js";
 import type { IdMapData } from "../../src/lib/idmap.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -149,9 +149,16 @@ async function guardPath(p: string, roots: string[]): Promise<string> {
   throw new Error(`Path is outside the allowed backup folder(s): ${p}`);
 }
 
+/** A backup made by a newer Restora than this build reads (format > 3). */
+class NewerFormatError extends Error {}
+
 async function loadBackupAt(path: string): Promise<BackupFile> {
   const text = await readFile(path, "utf8");
-  return parseBackup(JSON.parse(text));
+  const json = JSON.parse(text);
+  // Say so plainly — the envelope check alone would call a newer Restora's file "not a Restora backup".
+  const fv = (json as { formatVersion?: unknown } | null)?.formatVersion;
+  if (typeof fv === "number" && Number.isInteger(fv) && fv > ARCHIVE_FORMAT_VERSION) throw new NewerFormatError(newerFormatMessage(fv));
+  return parseBackup(json);
 }
 
 /** The backup a tool should act on: explicit guarded `path`, else the configured default, else newest. */
@@ -300,14 +307,16 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
           try {
             const backup = await loadBackupAt(f.path);
             bytesRead += f.size;
-            backups.push({ path: f.path, sizeBytes: f.size, ...summarizeBackup(backup) });
+            // Format 3 only: the archived-row facts beside the (live) counts. v1/v2 entries are unchanged.
+            const archive = archiveSummary(backup, buildArchiveDisplay(backup));
+            backups.push({ path: f.path, sizeBytes: f.size, ...summarizeBackup(backup), ...(archive ? { archive } : {}) });
             summarized++;
-          } catch {
+          } catch (e) {
             // Surface it rather than dropping it: a corrupt or foreign file that matched the backup
             // naming convention is exactly what the user needs told. Silently skipping produced the
             // baffling `totalFound: 3, backups: []`.
             bytesRead += f.size;
-            backups.push({ path: f.path, sizeBytes: f.size, summary: null, note: "Not a readable Restora backup envelope." });
+            backups.push({ path: f.path, sizeBytes: f.size, summary: null, note: e instanceof NewerFormatError ? e.message : "Not a readable Restora backup envelope." });
             notSummarized++;
           }
         }
@@ -324,12 +333,15 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
       case "describe_backup": {
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
-        return textResult({ path, ...buildWorkspaceMap(backup) });
+        const archive = describeArchive(backup, buildArchiveDisplay(backup));
+        return textResult({ path, ...buildWorkspaceMap(backup), ...(archive ? { archive } : {}) });
       }
       case "query_database": {
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
-        const resolver = buildResolver(backup);
+        // Live rows only, as ever; relation values name captured archived rows (archive-display.ts).
+        const display = buildArchiveDisplay(backup);
+        const resolver = display.resolver;
         const result = queryDataSource(backup, resolver, {
           dataSourceId: strFlag(args, "dataSourceId"),
           databaseId: strFlag(args, "databaseId"),
@@ -338,26 +350,30 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
           properties: Array.isArray(args?.properties) ? args.properties : undefined,
           filterText: strFlag(args, "filterText"),
         });
-        return textResult(result);
+        const archive = dataSourceArchive(display, result.dataSource.id);
+        return textResult(archive ? { ...result, archive } : result);
       }
       case "get_page": {
         const pageId = strFlag(args, "pageId");
         if (!pageId) return errorResult("get_page requires a pageId.");
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
-        const resolver = buildResolver(backup);
         const format = args?.format === "text" ? "text" : "markdown";
-        return textResult(getPageMarkdown(resolver, pageId, format));
+        // A live row or page as ever — or a CAPTURED archived row, whose source line says so.
+        return textResult(renderPage(buildArchiveDisplay(backup), pageId, format));
       }
       case "search": {
         const query = strFlag(args, "query");
         if (!query) return errorResult("search requires a query.");
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
-        const resolver = buildResolver(backup);
+        const display = buildArchiveDisplay(backup);
         const scope = (["titles", "content", "all"].includes(args?.scope) ? args.scope : "all") as SearchScope;
         const limit = typeof args?.limit === "number" ? args.limit : undefined;
-        return textResult(searchBackup(backup, resolver, query, scope, limit));
+        const result = searchBackup(backup, display.resolver, query, scope, limit);
+        // Format 3 only: say what the (live-only) search didn't look at.
+        const summary = archiveSummary(backup, display);
+        return textResult(summary ? { ...result, archive: { archivedRowsNotSearched: summary.capturedRows, note: ARCHIVE_NOTE } } : result);
       }
       case "read_id_map":
         return textResult(await readIdMap(source, strFlag(args, "path")));

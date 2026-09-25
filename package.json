@@ -14,6 +14,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "node build.mjs && node test/mcp-archive.test.mjs",
     "start": "node dist/restora-mcp.js"
   },
   "engines": {
