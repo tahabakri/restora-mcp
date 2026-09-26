@@ -18,7 +18,7 @@
  * the published CLI stays a single zero-dep esbuild bundle). CRITICAL: stdout carries ONLY protocol
  * frames — all logs go to stderr, and we redirect console.log → stderr as belt-and-suspenders.
  */
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig, type RestoraConfig } from "./config.js";
@@ -152,13 +152,46 @@ async function guardPath(p: string, roots: string[]): Promise<string> {
 /** A backup made by a newer Restora than this build reads (format > 3). */
 class NewerFormatError extends Error {}
 
-async function loadBackupAt(path: string): Promise<BackupFile> {
+async function readBackupFile(path: string): Promise<BackupFile> {
   const text = await readFile(path, "utf8");
   const json = JSON.parse(text);
   // Say so plainly — the envelope check alone would call a newer Restora's file "not a Restora backup".
   const fv = (json as { formatVersion?: unknown } | null)?.formatVersion;
   if (typeof fv === "number" && Number.isInteger(fv) && fv > ARCHIVE_FORMAT_VERSION) throw new NewerFormatError(newerFormatMessage(fv));
   return parseBackup(json);
+}
+
+/**
+ * The backup the tools are working on, parsed once. Every tool call used to re-read, JSON.parse and
+ * zod-validate the WHOLE file — measured on a 144 MB / 60k-row backup: 8.5–14 s for every call, a 5-row
+ * query_database included, while an agent makes many calls against one backup. One entry, so memory stays
+ * bounded to the file in use; keyed by path + size + both file times, so a changed or replaced file is
+ * always re-read; dropped after a quiet spell so an idle server doesn't hold a large workspace all day.
+ * The readers are pure (nothing mutates a parsed backup), so sharing one parse between calls is safe.
+ */
+const CACHE_IDLE_MS = 5 * 60_000;
+let cached: { path: string; key: string; backup: BackupFile } | undefined;
+let cacheTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function loadBackupAt(path: string): Promise<BackupFile> {
+  const s = await stat(path);
+  const key = `${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+  if (!cached || cached.path !== path || cached.key !== key) {
+    cached = undefined; // never hold two large parses at once
+    cached = { path, key, backup: await readBackupFile(path) };
+  }
+  if (cacheTimer) clearTimeout(cacheTimer);
+  cacheTimer = setTimeout(() => (cached = undefined), CACHE_IDLE_MS);
+  cacheTimer.unref(); // never what keeps the process alive after the client hangs up
+  return cached.backup;
+}
+
+/** buildArchiveDisplay indexes every row — once per parsed backup, not once per call. */
+const displays = new WeakMap<BackupFile, ReturnType<typeof buildArchiveDisplay>>();
+function displayOf(backup: BackupFile): ReturnType<typeof buildArchiveDisplay> {
+  let d = displays.get(backup);
+  if (!d) displays.set(backup, (d = buildArchiveDisplay(backup)));
+  return d;
 }
 
 /** The backup a tool should act on: explicit guarded `path`, else the configured default, else newest. */
@@ -305,7 +338,8 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
             continue;
           }
           try {
-            const backup = await loadBackupAt(f.path);
+            // Summaries read each file fresh: caching them would evict the backup the agent is working on.
+            const backup = await readBackupFile(f.path);
             bytesRead += f.size;
             // Format 3 only: the archived-row facts beside the (live) counts. v1/v2 entries are unchanged.
             const archive = archiveSummary(backup, buildArchiveDisplay(backup));
@@ -333,14 +367,14 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
       case "describe_backup": {
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
-        const archive = describeArchive(backup, buildArchiveDisplay(backup));
+        const archive = describeArchive(backup, displayOf(backup));
         return textResult({ path, ...buildWorkspaceMap(backup), ...(archive ? { archive } : {}) });
       }
       case "query_database": {
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
         // Live rows only, as ever; relation values name captured archived rows (archive-display.ts).
-        const display = buildArchiveDisplay(backup);
+        const display = displayOf(backup);
         const resolver = display.resolver;
         const result = queryDataSource(backup, resolver, {
           dataSourceId: strFlag(args, "dataSourceId"),
@@ -360,14 +394,14 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
         const backup = await loadBackupAt(path);
         const format = args?.format === "text" ? "text" : "markdown";
         // A live row or page as ever — or a CAPTURED archived row, whose source line says so.
-        return textResult(renderPage(buildArchiveDisplay(backup), pageId, format));
+        return textResult(renderPage(displayOf(backup), pageId, format));
       }
       case "search": {
         const query = strFlag(args, "query");
         if (!query) return errorResult("search requires a query.");
         const path = await resolveBackupPath(source, strFlag(args, "path"));
         const backup = await loadBackupAt(path);
-        const display = buildArchiveDisplay(backup);
+        const display = displayOf(backup);
         const scope = (["titles", "content", "all"].includes(args?.scope) ? args.scope : "all") as SearchScope;
         const limit = typeof args?.limit === "number" ? args.limit : undefined;
         const result = searchBackup(backup, display.resolver, query, scope, limit);
@@ -399,6 +433,12 @@ async function readIdMap(source: BackupSource, argPath?: string): Promise<any> {
     path = files[0]!.path;
   }
   const data = JSON.parse(await readFile(path, "utf8")) as Partial<IdMapData>;
+  // A backup handed in by mistake used to "succeed": its `pages` ARRAY read as a map, so its page objects
+  // came back as old→new id pairs. An id-map's sections are plain id → id objects; anything else is refused.
+  const isIdPairs = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((x) => typeof x === "string");
+  if (!data || typeof data !== "object" || Array.isArray(data) || !("dataSources" in data || "pages" in data) || !isIdPairs(data.dataSources ?? {}) || !isIdPairs(data.pages ?? {})) {
+    throw new Error(`Not a restore id-map: ${path}. Expected the restore-map-*.json a restore writes (old → new ids).`);
+  }
   const count = (r?: Record<string, string>) => (r ? Object.keys(r).length : 0);
   const PAIR_CAP = 500;
   const capMap = (r?: Record<string, string>) => {
