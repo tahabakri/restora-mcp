@@ -186,6 +186,17 @@ async function loadBackupAt(path: string): Promise<BackupFile> {
   return cached.backup;
 }
 
+/**
+ * Which Notion workspace a backup came from, exactly as its own header records it (`sourceWorkspace`,
+ * stamped since 2026-08-28 from the integration's users/me). The id is the only identity key; the name is
+ * display-only and absent from server-scheduled backups. Older backups carry neither: null, never a guess —
+ * nothing here asks Notion.
+ */
+function workspaceOf(backup: BackupFile): { id: string; name?: string } | null {
+  const ws = backup.sourceWorkspace;
+  return ws?.id ? { id: ws.id, ...(ws.name ? { name: ws.name } : {}) } : null;
+}
+
 /** buildArchiveDisplay indexes every row — once per parsed backup, not once per call. */
 const displays = new WeakMap<BackupFile, ReturnType<typeof buildArchiveDisplay>>();
 function displayOf(backup: BackupFile): ReturnType<typeof buildArchiveDisplay> {
@@ -222,7 +233,7 @@ function toolCatalog(allowLive: boolean): ToolDef[] {
   const tools: ToolDef[] = [
     {
       name: "list_backups",
-      description: `List the local Restora backup files (path, date, sizes, database/page counts). ${SAFETY_NOTE}`,
+      description: `List the local Restora backup files (path, date, sizes, database/page counts, and the Notion workspace each came from: workspace {id, name?} as recorded in the file — compare backups by id, the name is for display and may be absent; null when the backup doesn't record it). ${SAFETY_NOTE}`,
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
@@ -303,8 +314,10 @@ function toolCatalog(allowLive: boolean): ToolDef[] {
 // Tool dispatch — each handler returns an MCP tool result (errors are in-band, never JSON-RPC errors).
 // ---------------------------------------------------------------------------------------------------
 
+// Compact JSON: an agent reads these, and pretty-printing was 25–45% of every structured answer. Strings
+// (get_page's Markdown / text) are returned exactly as rendered.
 const textResult = (data: unknown) => ({
-  content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }],
+  content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data) }],
 });
 const errorResult = (message: string) => ({ content: [{ type: "text", text: `Error: ${message}` }], isError: true });
 
@@ -343,7 +356,7 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
             bytesRead += f.size;
             // Format 3 only: the archived-row facts beside the (live) counts. v1/v2 entries are unchanged.
             const archive = archiveSummary(backup, buildArchiveDisplay(backup));
-            backups.push({ path: f.path, sizeBytes: f.size, ...summarizeBackup(backup), ...(archive ? { archive } : {}) });
+            backups.push({ path: f.path, sizeBytes: f.size, workspace: workspaceOf(backup), ...summarizeBackup(backup), ...(archive ? { archive } : {}) });
             summarized++;
           } catch (e) {
             // Surface it rather than dropping it: a corrupt or foreign file that matched the backup

@@ -2,8 +2,10 @@
  * Restora MCP reads format-3 backups truthfully (archived rows), and v1/v2 answers are unchanged.
  *
  * Drives the REAL built server (dist/restora-mcp.js) over stdio JSON-RPC, exactly as an agent does:
- *   1. v1/v2: every tool's answer is byte-identical to the 0.3.0 server's (03ab1b2), recorded in
- *      test/fixtures/v1v2-baseline.json;
+ *   1. v1/v2: every tool's answer is byte-identical to test/fixtures/v1v2-baseline.json (re-recorded
+ *      2026-09-26 when answers became compact JSON), AND has exactly the keys and values of the 0.3.0
+ *      server's (03ab1b2) answers in test/fixtures/v1v2-baseline-0.3.0.json — the only change since is
+ *      the serialization, plus list_backups' `workspace` field;
  *   2. v3: a relation to a CAPTURED archived row names it "(archived)" — never "(not in this backup)";
  *      get_page opens it and says it's an archived row; unknown / unavailable / inconsistent targets
  *      are never invented; query_database and search stay live-only; the archive states are the app's;
@@ -18,10 +20,12 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, u
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist", "restora-mcp.js");
 const BASELINE = join(ROOT, "test", "fixtures", "v1v2-baseline.json");
+const BASELINE_030 = join(ROOT, "test", "fixtures", "v1v2-baseline-0.3.0.json");
 const recordFrom = process.argv[2] === "--record" ? resolve(process.argv[3] ?? "") : null;
 
 let ok = true;
@@ -180,17 +184,39 @@ async function main() {
       return;
     }
 
-    console.log("=== 1. v1/v2: every answer is byte-identical to the 0.3.0 server's ===");
+    console.log("=== 1. v1/v2: every answer is byte-identical to the baseline, and the 0.3.0 server's in content ===");
     {
       const baseline = JSON.parse(readFileSync(BASELINE, "utf8"));
+      const v030 = JSON.parse(readFileSync(BASELINE_030, "utf8"));
       const srv = startServer(DIST, v1v2Dir, home);
-      const drift = [];
-      for (const [label, name, args] of v1v2Calls(v1v2Dir)) {
-        if (normalize((await srv.tool(name, args)).text, v1v2Dir) !== baseline[label]) drift.push(label);
-      }
-      if (normalize((await srv.tool("list_backups")).text, v1v2Dir) !== baseline["list_backups"]) drift.push("list_backups");
+      const answers = {};
+      for (const [label, name, args] of v1v2Calls(v1v2Dir)) answers[label] = normalize((await srv.tool(name, args)).text, v1v2Dir);
+      answers["list_backups"] = normalize((await srv.tool("list_backups")).text, v1v2Dir);
       await srv.close();
+      const drift = Object.keys(answers).filter((label) => answers[label] !== baseline[label]);
       check(drift.length === 0, `${v1v2Calls(v1v2Dir).length + 1} v1/v2 answers (describe, query ×3, get_page ×4, search ×3 per file, list) unchanged${drift.length ? ` — CHANGED: ${drift.join(" | ")}` : ""}`);
+      // Content, against the 0.3.0 server: the same keys and values, only compacted — list_backups may add
+      // `workspace` (null for these unstamped files). Markdown answers stay byte-identical.
+      const parse = (t) => {
+        try {
+          return JSON.parse(t);
+        } catch {
+          return undefined;
+        }
+      };
+      const changed = [];
+      for (const [label, text] of Object.entries(answers)) {
+        const now = parse(text);
+        const then = parse(v030[label]);
+        if (now === undefined || then === undefined) {
+          if (text !== v030[label]) changed.push(label);
+          continue;
+        }
+        if (text !== JSON.stringify(now)) changed.push(`${label} (not compact)`);
+        if (label === "list_backups") for (const b of now.backups ?? []) delete b.workspace;
+        if (!isDeepStrictEqual(now, then)) changed.push(label);
+      }
+      check(changed.length === 0, `all ${Object.keys(answers).length} carry the 0.3.0 server's keys and values, compact${changed.length ? ` — DIFFER: ${changed.join(" | ")}` : ""}`);
       rmSync(v1v2Dir, { recursive: true, force: true });
     }
 

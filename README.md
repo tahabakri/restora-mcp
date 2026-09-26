@@ -26,7 +26,7 @@ here as a standalone, source-available server. The ready-to-run version ships in
 
 | Tool | What it does |
 |------|--------------|
-| `list_backups` | List your local Restora backup files (path, date, size, database/page counts). |
+| `list_backups` | List your local Restora backup files (path, date, size, database/page counts, and the Notion workspace each came from — compare by id). |
 | `describe_backup` | Workspace map of a backup: databases → data sources → property schema, the relations graph, and views. Start here. |
 | `query_database` | Rows of one database with readable values — relations resolved to linked page titles. |
 | `get_page` | One page's properties and content, rendered to Markdown or plain text. |
