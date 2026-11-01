@@ -32,7 +32,7 @@ here as a standalone, source-available server. The ready-to-run version ships in
 | `get_page` | One page's properties and content, rendered to Markdown or plain text. |
 | `search` | Find pages by case-insensitive substring across titles, property values, and block text. |
 | `read_id_map` | Summarize a restore id-map (`restore-map-*.json`): old → new ids, to repoint integrations after a restore. |
-| `run_drift_audit` | *(requires `--allow-live`)* Compare a backup against your **current** Notion to find deleted/emptied databases, removed properties, and type changes. Reads your own Notion only. |
+| `run_drift_audit` | *(requires `--allow-live`)* Compare a backup against your **current** Notion to find databases that are missing (deleted, or no longer shared with Restora) or emptied, removed properties, and type changes. Reads your own Notion only. |
 
 ## Quick start (recommended)
 

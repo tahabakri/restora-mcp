@@ -296,7 +296,7 @@ function toolCatalog(allowLive: boolean): ToolDef[] {
   if (allowLive) {
     tools.push({
       name: "run_drift_audit",
-      description: `Live drift audit: compare a backup against your CURRENT Notion to find deleted/emptied databases, removed properties, and type changes — the input for a restore plan. Read-only; makes network calls to YOUR Notion only (never an LLM, never Restora servers). Requires a connected token. ${SAFETY_NOTE}`,
+      description: `Live drift audit: compare a backup against your CURRENT Notion to find databases that are missing (deleted, or no longer shared with Restora) or emptied, removed properties, and type changes — the input for a restore plan. Read-only; makes network calls to YOUR Notion only (never an LLM, never Restora servers). Requires a connected token. ${SAFETY_NOTE}`,
       inputSchema: {
         type: "object",
         properties: {

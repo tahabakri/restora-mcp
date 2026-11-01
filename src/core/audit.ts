@@ -243,7 +243,9 @@ export async function runAudit(
       const status = (err as any)?.status;
       const entry = baseEntry(dbTitle, dsName, backupPages);
       if (code === "object_not_found" || status === 404) {
-        entries.push({ ...entry, status: "deleted", note: "Gone from your workspace — a restore rebuilds it." });
+        // Notion answers 404 for a database that was deleted AND for one no longer shared with Restora — the note says
+        // both, never "gone" (the Restora app's src/core/audit.ts says the same).
+        entries.push({ ...entry, status: "deleted", note: "Not found in your live workspace — deleted, or no longer shared with Restora. This backup still has it." });
       } else if (code === "restricted_resource" || status === 403 || status === 401) {
         entries.push({ ...entry, status: "no-access", note: "Restora no longer has access to this database." });
       } else {
