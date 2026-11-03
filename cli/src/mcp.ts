@@ -149,6 +149,19 @@ async function guardPath(p: string, roots: string[]): Promise<string> {
   throw new Error(`Path is outside the allowed backup folder(s): ${p}`);
 }
 
+/**
+ * The newest listed file that really lives under an allowed root, or null. A listing names what's IN the folder, but
+ * a symlink there can point anywhere: every read, not just one the caller names, goes through guardPath's real-path
+ * check, so a link to a file outside the folder is never read by default either.
+ */
+async function newestInside(files: Array<{ path: string }>, roots: string[]): Promise<string | null> {
+  for (const f of files) {
+    const inside = await guardPath(f.path, roots).catch(() => null);
+    if (inside !== null) return inside;
+  }
+  return null;
+}
+
 /** A backup made by a newer Restora than this build reads (format > 3). */
 class NewerFormatError extends Error {}
 
@@ -210,12 +223,13 @@ async function resolveBackupPath(source: BackupSource, argPath?: string): Promis
   if (argPath) return guardPath(argPath, source.roots);
   if (source.defaultFile) return source.defaultFile;
   const files = await listFiles(source.roots, isBackupFileName);
-  if (!files.length) {
+  const newest = await newestInside(files, source.roots);
+  if (newest === null) {
     throw new Error(
-      `No backups found in ${source.roots.join(", ")}. Pass path, or run \`restora backup --to local\` first.`,
+      `No backups found in ${source.roots.join(", ")}${files.length ? " (only links to files outside it)" : ""}. Pass path, or run \`restora backup --to local\` first.`,
     );
   }
-  return files[0]!.path;
+  return newest;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -350,6 +364,12 @@ async function callTool(name: string, args: any, source: BackupSource, allowLive
             notSummarized++;
             continue;
           }
+          // A link to a file outside the backup folder(s) is listed, never read.
+          if ((await guardPath(f.path, source.roots).catch(() => null)) === null) {
+            backups.push({ path: f.path, sizeBytes: f.size, summary: null, note: "Not read: it links to a file outside the backup folder(s)." });
+            notSummarized++;
+            continue;
+          }
           try {
             // Summaries read each file fresh: caching them would evict the backup the agent is working on.
             const backup = await readBackupFile(f.path);
@@ -442,8 +462,9 @@ async function readIdMap(source: BackupSource, argPath?: string): Promise<any> {
   if (argPath) path = await guardPath(argPath, source.roots);
   else {
     const files = await listFiles(source.roots, isIdMapFileName);
-    if (!files.length) throw new Error(`No restore-map-*.json found in ${source.roots.join(", ")}.`);
-    path = files[0]!.path;
+    const newest = await newestInside(files, source.roots);
+    if (newest === null) throw new Error(`No restore-map-*.json found in ${source.roots.join(", ")}.`);
+    path = newest;
   }
   const data = JSON.parse(await readFile(path, "utf8")) as Partial<IdMapData>;
   // A backup handed in by mistake used to "succeed": its `pages` ARRAY read as a map, so its page objects
