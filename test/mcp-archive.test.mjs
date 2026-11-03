@@ -322,7 +322,7 @@ async function main() {
     console.log("\n=== 8. the mirrored readers are the Restora app's, byte for byte ===");
     {
       const APP = join(ROOT, "..", "Notion_back");
-      const mirrored = ["src/core/backup-query.ts", "src/core/calculated-values.ts", "src/core/render-md.ts", "src/core/archive-state.ts", "src/core/archive-query.ts", "src/notion/types.ts"];
+      const mirrored = ["src/core/backup-query.ts", "src/core/calculated-values.ts", "src/core/render-md.ts", "src/core/archive-state.ts", "src/core/archive-query.ts", "src/notion/types.ts", "packages/node-api/src/backup-files.ts"];
       if (!existsSync(APP)) {
         console.log(`  SKIPPED — no sibling app checkout at ${APP}; the mirror pin did NOT run`);
       } else {

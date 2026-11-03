@@ -166,6 +166,11 @@ export const backupFileSchema = z.object({
   // degrades to named "inconsistent" states, never to a whole-file parse failure (the live data stays
   // readable) and never to "captured" or a confirmed zero. Absent on every v1/v2 file.
   archive: z.unknown().optional(),
+  // What this backup knows it didn't get (additive, 2026-11-01). Kept verbatim and read ONLY through
+  // src/core/capture-gaps.ts: a malformed record reads as no record, never as "complete" and never as a
+  // whole-file parse failure. No formatVersion bump: older readers strip it, and older files lack it,
+  // which is a fact about them and not a claim that nothing was missed.
+  capture: z.unknown().optional(),
 });
 
 export type BackupFile = z.infer<typeof backupFileSchema>;

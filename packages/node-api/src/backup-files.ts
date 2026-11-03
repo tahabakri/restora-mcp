@@ -9,6 +9,8 @@ import { join } from "node:path";
 export function isBackupFileName(name: string): boolean {
   const n = name.toLowerCase();
   if (!n.endsWith(".json")) return false;
+  // A backup's manifest (last-copy-cli.ts writes `<backup>.manifest.json` beside it on S3 and Drive) is not a backup.
+  if (n.endsWith(".manifest.json")) return false;
   if (n.startsWith("restore-map-")) return false;
   if (n === "seed-output.json" || n === "restore-output.json") return false;
   return n.startsWith("notion-backup-") || n.startsWith("backup-");
